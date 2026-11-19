@@ -7,11 +7,7 @@ import { useState } from "react";
 const SessionProviderPage = ({ children }: { children: React.ReactNode }) => {
   const [queryClient] = useState(() => new QueryClient());
   return (
-    <SessionProvider
-      // refetchInterval={5 * 60}
-      refetchInterval={30}
-      refetchOnWindowFocus={true}
-    >
+    <SessionProvider refetchInterval={5 * 60} refetchOnWindowFocus={true}>
       <QueryClientProvider client={queryClient}>
         {children}
         <ReactQueryDevtools initialIsOpen={false} />
