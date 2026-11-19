@@ -39,7 +39,7 @@ export const useUpdateNotificationRequest = () => {
       return response.data;
     },
     onSuccess: (data) => {
-      toast.success(data.message || "Notification updated successfully");
+      // toast.success(data.message || "Notification updated successfully");
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
     onError: (error: any) => {
