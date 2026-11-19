@@ -9,7 +9,8 @@ import axios from "axios";
 ----------------------------- */
 
 // Backend access token expires after 15 minutes.
-const ACCESS_TOKEN_EXPIRES_IN = 15 * 60 * 1000;
+// const ACCESS_TOKEN_EXPIRES_IN = 15 * 60 * 1000;
+const ACCESS_TOKEN_EXPIRES_IN = 60 * 1000; // 1 minute
 
 // NextAuth session expires after 180 days.
 const SESSION_MAX_AGE = 180 * 24 * 60 * 60;
@@ -115,7 +116,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           refreshToken: user.refreshToken,
           // Backend returns 900 seconds.
           expiresIn: user.expiresIn ?? 900,
-
           accessTokenExpires: Date.now() + (user.expiresIn ?? 900) * 1000,
         };
       },
