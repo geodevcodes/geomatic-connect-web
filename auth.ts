@@ -7,25 +7,54 @@ import axios from "axios";
 /* -----------------------------
    Constants
 ----------------------------- */
-const ACCESS_TOKEN_EXPIRES_IN = 15 * 60 * 1000; // 15 minutes (ms)
+
+// Backend access token expires after 15 minutes.
+const ACCESS_TOKEN_EXPIRES_IN = 15 * 60 * 1000;
+
+// NextAuth session expires after 180 days.
+const SESSION_MAX_AGE = 180 * 24 * 60 * 60;
 
 /* -----------------------------
    Refresh Access Token
 ----------------------------- */
+
 async function refreshAccessToken(token: any) {
   try {
+    if (!token.refreshToken) {
+      throw new Error("No refresh token available");
+    }
+
     const response = await axios.post(
       `${process.env.NEXT_PUBLIC_BASEURL}/auth/refresh`,
-      { refreshToken: token.refreshToken }
+      {
+        refreshToken: token.refreshToken,
+      },
     );
+
+    const newAccessToken = response.data.accessToken;
+    const newRefreshToken = response.data.refreshToken;
+
+    if (!newAccessToken || !newRefreshToken) {
+      throw new Error("Invalid token refresh response");
+    }
 
     return {
       ...token,
-      token: response.data.accessToken,
-      accessTokenExpires: Date.now() + 15 * 60 * 1000, // 15 min
+      // Save the newly generated access token.
+      token: newAccessToken,
+      // IMPORTANT: Save the newly generated refresh token too.
+      refreshToken: newRefreshToken,
+      // Reset access token expiration to 15 minutes.
+      accessTokenExpires: Date.now() + ACCESS_TOKEN_EXPIRES_IN,
+      // Clear previous refresh errors.
+      error: undefined,
     };
   } catch (error) {
-    console.error("❌ Refresh access token error:", error);
+    console.error(
+      "Refresh access token error:",
+      axios.isAxiosError(error) ? error.response?.data || error.message : error,
+    );
+
     return {
       ...token,
       error: "RefreshAccessTokenError",
@@ -34,14 +63,25 @@ async function refreshAccessToken(token: any) {
 }
 
 /* -----------------------------
-   NextAuth
+   NextAuth Configuration
 ----------------------------- */
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET,
-  session: { strategy: "jwt" },
+
+  session: {
+    strategy: "jwt",
+    maxAge: SESSION_MAX_AGE,
+  },
+
   providers: [
+    /* -----------------------------
+       Credentials Login
+    ----------------------------- */
+
     Credentials({
       name: "Credentials",
+
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
           return null;
@@ -51,56 +91,87 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           `${process.env.NEXT_PUBLIC_BASEURL}/auth/login`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+            },
             body: JSON.stringify(credentials),
-          }
+          },
         );
+
         if (!response.ok) {
           return null;
         }
 
         const user = await response.json();
-
-        if (!user?.data) {
+        if (!user?.data || !user?.token || !user?.refreshToken) {
           return null;
         }
 
-        // Return full User object matching your types
         return {
           _id: user.data._id,
           email: user.data.email,
           role: user.data.role,
           token: user.token,
           refreshToken: user.refreshToken,
-          accessTokenExpires: Date.now() + 15 * 60 * 1000, // 15 minutes
+          // Backend returns 900 seconds.
+          expiresIn: user.expiresIn ?? 900,
+          accessTokenExpires: Date.now() + (user.expiresIn ?? 900) * 1000,
         };
       },
     }),
+
+    /* -----------------------------
+       Google Login
+    ----------------------------- */
+
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-      authorization: { params: { prompt: "consent", access_type: "offline" } },
+      authorization: {
+        params: {
+          prompt: "consent",
+          access_type: "offline",
+        },
+      },
     }),
+
+    /* -----------------------------
+       GitHub Login
+    ----------------------------- */
+
     GitHub({
       clientId: process.env.NEXT_GITHUB_CLIENT_ID!,
       clientSecret: process.env.NEXT_GITHUB_CLIENT_SECRET!,
     }),
   ],
 
+  /* -----------------------------
+     Callbacks
+  ----------------------------- */
+
   callbacks: {
     async jwt({ token, user, account, profile }) {
-      // Initial sign-in
+      /* -----------------------------
+         Initial Login
+      ----------------------------- */
+
       if (account && user) {
+        // Credentials authentication
         if (account.provider === "credentials") {
           return {
+            ...token,
             _id: user._id,
             role: user.role,
             email: user.email,
             token: user.token,
             refreshToken: user.refreshToken,
-            accessTokenExpires: Date.now() + ACCESS_TOKEN_EXPIRES_IN,
+            accessTokenExpires:
+              user.accessTokenExpires || Date.now() + ACCESS_TOKEN_EXPIRES_IN,
           };
-        } else if (account.provider === "google") {
+        }
+
+        // Google authentication
+        else if (account.provider === "google") {
           const res = await axios.post(
             `${process.env.NEXT_PUBLIC_BASEURL}/auth/google-login`,
             {
@@ -108,15 +179,26 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
               name: profile?.name,
               picture: profile?.picture,
               googleId: profile?.sub,
-            }
+            },
           );
-          token._id = res.data.data._id;
-          token.email = res.data.data.email;
-          token.role = res.data.data.role;
-          token.token = res.data.token;
-          token.refreshToken = res.data.refreshToken;
-          token.accessTokenExpires = Date.now() + 15 * 60 * 1000;
-        } else if (account.provider === "github") {
+
+          if (!res.data?.token || !res.data?.refreshToken || !res.data?.data) {
+            throw new Error("Invalid Google login response");
+          }
+
+          return {
+            ...token,
+            _id: res.data.data._id,
+            email: res.data.data.email,
+            role: res.data.data.role,
+            token: res.data.token,
+            refreshToken: res.data.refreshToken,
+            accessTokenExpires: Date.now() + (res.data.expiresIn ?? 900) * 1000,
+          };
+        }
+
+        // GitHub authentication
+        else if (account.provider === "github") {
           const res = await axios.post(
             `${process.env.NEXT_PUBLIC_BASEURL}/auth/github-login`,
             {
@@ -124,35 +206,59 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
               name: profile?.name,
               picture: profile?.picture,
               githubId: profile?.id?.toString(),
-            }
+            },
           );
-          token._id = res.data.data._id;
-          token.email = res.data.data.email;
-          token.role = res.data.data.role;
-          token.token = res.data.token;
-          token.refreshToken = res.data.refreshToken;
-          token.accessTokenExpires = Date.now() + 15 * 60 * 1000;
+
+          if (!res.data?.token || !res.data?.refreshToken || !res.data?.data) {
+            throw new Error("Invalid GitHub login response");
+          }
+
+          return {
+            ...token,
+            _id: res.data.data._id,
+            email: res.data.data.email,
+            role: res.data.data.role,
+            token: res.data.token,
+            refreshToken: res.data.refreshToken,
+            accessTokenExpires: Date.now() + (res.data.expiresIn ?? 900) * 1000,
+          };
         }
       }
 
-      // Token still valid
+      /* -----------------------------
+         Check Access Token Expiration
+      ----------------------------- */
+
+      // If access token is still valid, return it.
       if (token.accessTokenExpires && Date.now() < token.accessTokenExpires) {
         return token;
       }
 
-      // Token expired → refresh
+      /* -----------------------------
+         Access Token Expired
+      ----------------------------- */
+
+      // Automatically request a new access token.
+      // The refresh token is also rotated here.
       return await refreshAccessToken(token);
     },
 
+    /* -----------------------------
+       Session Callback
+    ----------------------------- */
+
     async session({ session, token }) {
       if (session.user) {
-        session.user._id = token._id;
-        session.user.email = token.email;
-        session.user.role = token.role;
-        session.user.token = token.token;
-        session.user.refreshToken = token.refreshToken;
-        session.user.accessTokenExpires = token.accessTokenExpires;
+        session.user._id = token._id!;
+        session.user.email = token.email!;
+        session.user.role = token.role!;
+        // Expose the access token for API requests.
+        session.user.token = token.token!;
+        session.user.accessTokenExpires = token.accessTokenExpires!;
+        // Expose refresh error so the frontend can handle it.
+        session.error = token.error;
       }
+
       return session;
     },
   },
